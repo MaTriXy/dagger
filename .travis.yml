@@ -1,26 +1,37 @@
-language: java
+language: android
+
+android:
+  components:
+    - build-tools-20.0.0
+    - android-16
+  licenses:
+    - android-sdk-license-5be876d5
 
 jdk:
   - oraclejdk7
-  - openjdk7 
-
-before_install:
-  - sudo apt-get update -qq
-  - if [ `uname -m` = x86_64 ]; then sudo apt-get install -qq --force-yes libgd2-xpm ia32-libs ia32-libs-multiarch; fi
-  - wget http://dl.google.com/android/android-sdk_r21.0.1-linux.tgz
-  - echo "Installing android SDK into ${PWD}/android-sdk-linux"
-  - tar -xzf android-sdk_r21.0.1-linux.tgz
-  - export ANDROID_HOME=${PWD}/android-sdk-linux
-  - export PATH=${PATH}:${ANDROID_HOME}/tools:${ANDROID_HOME}/platform-tools
-  - android update sdk --filter platform-tools,android-16 --no-ui --force
+  # - oraclejdk8 Dagger integration tests fail with JDK 8 :(
 
 install: mvn install clean --fail-never --quiet -DskipTests=true -Dinvoker.skip=true
 
-script: mvn verify 
+script: mvn verify
 
-notifications:
-  email: false
+after_success:
+  - .buildscript/deploy_snapshot.sh
+
+env:
+  global:
+    - secure: "MhR0Wr+bSbdyO6a6CM2MVHLwmFZoi8ZWWncMCNSi8/xdRoykpC1HkwJjQK+HJv7j3VNbVTPNJ/yTpzJsL4JV9aTF/S28mka8GmHSmQSeQzTuNMqnE30GDbhS3S73azGHvC9/wjh1mAA0Gz/zUX/rzCYvDVZ/DmK1HppomN+P32A="
+    - secure: "fnHK/ei7tdcUDlQZcXWVPRgXoIFv6h0TWSzz4spgNtFlYqa47Qr4HQOLyEpWRqZHjgfR5eXD+CCI049Z73cg5oVOp1krV0aGX/wHc5lDMJuCrBZ/YoWZnDygiPzM4CvrpxRE7DjqzC0InVdbEbuECiFsI2WotLdQ6efgaxjpZCk="
 
 branches:
   except:
     - gh-pages
+
+notifications:
+  email: false
+
+sudo: false
+
+cache:
+  directories:
+    - $HOME/.m2

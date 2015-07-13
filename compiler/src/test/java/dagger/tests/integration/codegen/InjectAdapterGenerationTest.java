@@ -36,28 +36,33 @@ public final class InjectAdapterGenerationTest {
         "class Basic {",
         "  static class A { @Inject A() { } }",
         "  @Module(injects = A.class)",
-        "  static class CyclicModule { }",
+        "  static class AModule { }",
         "}"));
 
     JavaFileObject expectedModuleAdapter =
-        JavaFileObjects.forSourceString("Basic$A$$InjectAdapter", Joiner.on("\n").join(
+        JavaFileObjects.forSourceString("Basic$AModule$$ModuleAdapter", Joiner.on("\n").join(
             "import dagger.internal.ModuleAdapter;",
-            "public final class Basic$CyclicModule$$ModuleAdapter",
-            "    extends ModuleAdapter<Basic.CyclicModule> {",
+            "import java.lang.Class;",
+            "import java.lang.Override;",
+            "import java.lang.String;",
+            "public final class Basic$AModule$$ModuleAdapter",
+            "    extends ModuleAdapter<Basic.AModule> {",
             "  private static final String[] INJECTS = {\"members/Basic$A\"};",
             "  private static final Class<?>[] STATIC_INJECTIONS = {};",
             "  private static final Class<?>[] INCLUDES = {};",
-            "  public Basic$CyclicModule$$ModuleAdapter() {",
-            "    super(INJECTS, STATIC_INJECTIONS, false, INCLUDES, true, false);",
+            "  public Basic$AModule$$ModuleAdapter() {",
+            "    super(Basic.AModule.class, INJECTS, STATIC_INJECTIONS, false, INCLUDES,",
+            "      true, false);",
             "  }",
-            "  @Override public Basic.CyclicModule newModule() {",
-            "    return new Basic.CyclicModule();",
+            "  @Override public Basic.AModule newModule() {",
+            "    return new Basic.AModule();",
             "  }",
             "}"));
 
     JavaFileObject expectedInjectAdapter =
         JavaFileObjects.forSourceString("Basic$A$$InjectAdapter", Joiner.on("\n").join(
             "import dagger.internal.Binding;",
+            "import java.lang.Override;",
             "import javax.inject.Provider;",
             "public final class Basic$A$$InjectAdapter",
             "    extends Binding<Basic.A> implements Provider<Basic.A> {",

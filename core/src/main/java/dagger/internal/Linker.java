@@ -17,8 +17,8 @@ package dagger.internal;
 
 import dagger.internal.Binding.InvalidBindingException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
-import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -38,7 +38,7 @@ public final class Linker {
   private final Linker base;
 
   /** Bindings requiring a call to attach(). May contain deferred bindings. */
-  private final Queue<Binding<?>> toLink = new LinkedList<Binding<?>>();
+  private final Queue<Binding<?>> toLink = new ArrayQueue<Binding<?>>();
 
   /** True unless calls to requestBinding() were unable to satisfy the binding. */
   private boolean attachSuccess = true;
@@ -48,6 +48,14 @@ public final class Linker {
 
   /** All of the object graph's bindings. This may contain unlinked bindings. */
   private final Map<String, Binding<?>> bindings = new HashMap<String, Binding<?>>();
+
+  /**
+   * An unmodifiable map containing all of the bindings available in this linker, fully linked.
+   * This will be null if the bindings are not yet fully linked. It provides both a signal
+   * of completion of the {@link #linkAll()} method, as well as a place to reference the final,
+   * fully linked map of bindings.
+   */
+  private volatile Map<String, Binding<?>> linkedBindings = null;
 
   private final Loader plugin;
 
@@ -66,37 +74,60 @@ public final class Linker {
    * Adds all bindings in {@code toInstall}. The caller must call either {@link
    * #linkAll} or {@link #requestBinding} and {@link #linkRequested} before the
    * bindings can be used.
+   *
+   * This method may only be called before {@link #linkAll()}. Subsequent calls to
+   * {@link #installBindings(BindingsGroup)} will throw an {@link IllegalStateException}.
    */
-  public void installBindings(Map<String, ? extends Binding<?>> toInstall) {
+  public void installBindings(BindingsGroup toInstall) {
+    if (linkedBindings != null) {
+      throw new IllegalStateException("Cannot install further bindings after calling linkAll().");
+    }
     for (Map.Entry<String, ? extends Binding<?>> entry : toInstall.entrySet()) {
       bindings.put(entry.getKey(), scope(entry.getValue()));
     }
   }
 
   /**
-   * Links requested bindings and installed bindings, plus all of their
-   * transitive dependencies. This creates JIT bindings as necessary to fill in
-   * the gaps.
+   * Links all known bindings (whether requested or installed), plus all of their
+   * transitive dependencies. This loads injectable types' bindings as necessary to fill in
+   * the gaps.  If this method has returned successfully at least once, all further
+   * work is short-circuited.
    *
-   * @return all bindings known by this linker, which will all be linked.
+   * @throws AssertionError if this method is not called within a synchronized block which
+   *     holds this {@link Linker} as the lock object.
    */
   public Map<String, Binding<?>> linkAll() {
+    assertLockHeld();
+    if (linkedBindings != null) {
+      return linkedBindings;
+    }
     for (Binding<?> binding : bindings.values()) {
       if (!binding.isLinked()) {
         toLink.add(binding);
       }
     }
-    linkRequested();
-    return bindings;
+    linkRequested(); // This method throws if bindings are not resolvable/linkable.
+    linkedBindings = Collections.unmodifiableMap(bindings);
+    return linkedBindings;
+  }
+
+  /**
+   * Returns the map of all bindings available to this {@link Linker}, if and only if
+   * {@link #linkAll()} has successfully returned at least once, otherwise it returns null;
+   */
+  public Map<String, Binding<?>> fullyLinkedBindings() {
+    return linkedBindings;
   }
 
   /**
    * Links all requested bindings plus their transitive dependencies. This
    * creates JIT bindings as necessary to fill in the gaps.
+   *
+   * @throws AssertionError if this method is not called within a synchronized block which
+   *     holds this {@link Linker} as the lock object.
    */
   public void linkRequested() {
     assertLockHeld();
-
     Binding<?> binding;
     while ((binding = toLink.poll()) != null) {
       if (binding instanceof DeferredBinding) {
@@ -107,18 +138,18 @@ public final class Linker {
           continue; // A binding for this key has since been linked.
         }
         try {
-          Binding<?> jitBinding =
-              createJitBinding(key, binding.requiredBy, deferred.classLoader, mustHaveInjections);
-          jitBinding.setLibrary(binding.library());
-          jitBinding.setDependedOn(binding.dependedOn());
+          Binding<?> resolvedBinding =
+              createBinding(key, binding.requiredBy, deferred.classLoader, mustHaveInjections);
+          resolvedBinding.setLibrary(binding.library());
+          resolvedBinding.setDependedOn(binding.dependedOn());
           // Fail if the type of binding we got wasn't capable of what was requested.
-          if (!key.equals(jitBinding.provideKey) && !key.equals(jitBinding.membersKey)) {
+          if (!key.equals(resolvedBinding.provideKey) && !key.equals(resolvedBinding.membersKey)) {
             throw new IllegalStateException("Unable to create binding for " + key);
           }
           // Enqueue the JIT binding so its own dependencies can be linked.
-          Binding<?> scopedJitBinding = scope(jitBinding);
-          toLink.add(scopedJitBinding);
-          putBinding(scopedJitBinding);
+          Binding<?> scopedBinding = scope(resolvedBinding);
+          toLink.add(scopedBinding);
+          putBinding(scopedBinding);
         } catch (InvalidBindingException e) {
           addError(e.type + " " + e.getMessage() + " required by " + binding.requiredBy);
           bindings.put(key, Binding.UNRESOLVED);
@@ -164,16 +195,17 @@ public final class Linker {
   }
 
   /**
-   * Creates a just-in-time binding for the key in {@code deferred}. The type of binding
+   * Returns a binding for the key in {@code deferred}. The type of binding
    * to be created depends on the key's type:
    * <ul>
    *   <li>Injections of {@code Provider<Foo>}, {@code MembersInjector<Bar>}, and
    *       {@code Lazy<Blah>} will delegate to the bindings of {@code Foo}, {@code Bar}, and
    *       {@code Blah} respectively.
-   *   <li>Injections of other types will use the injectable constructors of those classes.
+   *   <li>Injections of raw types will use the injectable constructors of those classes.
+   *   <li>Any other injection types require @Provides bindings and will error out.
    * </ul>
    */
-  private Binding<?> createJitBinding(String key, Object requiredBy, ClassLoader classLoader,
+  private Binding<?> createBinding(String key, Object requiredBy, ClassLoader classLoader,
       boolean mustHaveInjections) {
     String builtInBindingsKey = Keys.getBuiltInBindingsKey(key);
     if (builtInBindingsKey != null) {
@@ -185,12 +217,19 @@ public final class Linker {
     }
 
     String className = Keys.getClassName(key);
-    if (className != null && !Keys.isAnnotated(key)) {
-      Binding<?> binding =
-          plugin.getAtInjectBinding(key, className, classLoader, mustHaveInjections);
-      if (binding != null) {
-        return binding;
-      }
+    if (className == null) {
+      throw new InvalidBindingException(key,
+          "is a generic class or an array and can only be bound with concrete type parameter(s) "
+          + "in a @Provides method.");
+    }
+    if (Keys.isAnnotated(key)) {
+      throw new InvalidBindingException(key,
+          "is a @Qualifier-annotated type and must be bound by a @Provides method.");
+    }
+    Binding<?> binding =
+        plugin.getAtInjectBinding(key, className, classLoader, mustHaveInjections);
+    if (binding != null) {
+      return binding;
     }
     throw new InvalidBindingException(className, "could not be bound with key " + key);
   }
@@ -280,10 +319,9 @@ public final class Linker {
    * Returns a scoped binding for {@code binding}.
    */
   static <T> Binding<T> scope(final Binding<T> binding) {
-    if (!binding.isSingleton()) {
-      return binding;
+    if (!binding.isSingleton() || binding instanceof SingletonBinding) {
+      return binding; // Default scoped binding or already a scoped binding.
     }
-    if (binding instanceof SingletonBinding) throw new AssertionError();
     return new SingletonBinding<T>(binding);
   }
 
@@ -418,11 +456,17 @@ public final class Linker {
       this.classLoader = classLoader;
       this.mustHaveInjections = mustHaveInjections;
     }
+
     @Override public void injectMembers(Object t) {
       throw new UnsupportedOperationException("Deferred bindings must resolve first.");
     }
+
     @Override public void getDependencies(Set<Binding<?>> get, Set<Binding<?>> injectMembers) {
       throw new UnsupportedOperationException("Deferred bindings must resolve first.");
+    }
+
+    @Override public String toString() {
+      return "DeferredBinding[deferredKey=" + deferredKey + "]";
     }
   }
 }

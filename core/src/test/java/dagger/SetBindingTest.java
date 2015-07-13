@@ -38,6 +38,7 @@ import static org.fest.assertions.Assertions.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.fail;
 
 @RunWith(JUnit4.class)
 public final class SetBindingTest {
@@ -208,6 +209,22 @@ public final class SetBindingTest {
     assertThat(logoutput.get()).contains("NullPointerException");
   }
 
+  @Test public void duplicateValuesContributed() {
+    class TestEntryPoint {
+      @Inject Set<String> strings;
+    }
+
+    @Module(injects = TestEntryPoint.class)
+    class TestModule {
+      @Provides(type=SET) String provideString1() { return "a"; }
+      @Provides(type=SET) String provideString2() { return "a"; }
+      @Provides(type=SET) String provideString3() { return "b"; }
+    }
+
+    TestEntryPoint ep = injectWithModule(new TestEntryPoint(), new TestModule());
+    assertThat(ep.strings).containsOnly("a", "b");
+  }
+
   @Test public void validateSetBinding() {
     class TestEntryPoint {
       @Inject Set<String> strings;
@@ -237,6 +254,55 @@ public final class SetBindingTest {
 
     ObjectGraph graph = ObjectGraph.createWith(new TestingLoader(), new TestModule());
     graph.validate();
+  }
+
+  @Test public void validateLibraryModules() {
+    class TestEntryPoint {}
+
+    @Module(library = true)
+    class SetModule {
+      @Provides(type = SET)
+      public String provideString() {
+        return "";
+      }
+    }
+
+    @Module(injects = TestEntryPoint.class, includes = SetModule.class)
+    class TestModule {}
+
+    ObjectGraph graph = ObjectGraph.createWith(new TestingLoader(),
+        new TestModule(), new SetModule());
+    graph.validate();
+  }
+
+  @Test public void validateLibraryModules_nonLibraryContributors() {
+    class TestEntryPoint {}
+
+    @Module(library = true)
+    class SetModule1 {
+      @Provides(type = SET)
+      public String provideString() {
+        return "a";
+      }
+    }
+
+    @Module
+    class SetModule2 {
+      @Provides(type = SET)
+      public String provideString() {
+        return "b";
+      }
+    }
+
+    @Module(injects = TestEntryPoint.class, includes = { SetModule1.class, SetModule2.class })
+    class TestModule {}
+
+    ObjectGraph graph = ObjectGraph.createWith(new TestingLoader(),
+        new TestModule(), new SetModule1(), new SetModule2());
+    try {
+      graph.validate();
+      fail();
+    } catch (IllegalStateException expected) {}
   }
 
   static class Logger {

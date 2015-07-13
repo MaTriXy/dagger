@@ -35,7 +35,7 @@ import javax.inject.Qualifier;
  *       qualified by the annotation.
  *   <li>{@code members/com.square.Foo}: injects members of Foo.
  * </ol>
- * Bindings from {@code @Provides} methods are of the first two types. Bindings
+ * Bindings from {@code @Provides} methods are of the first two types. BindingsGroup
  * created from {@code @Inject}-annotated members of a class are of the first
  * and last types.
  */
@@ -46,12 +46,12 @@ public final class Keys {
   private static final String LAZY_PREFIX = Lazy.class.getCanonicalName() + "<";
   private static final String SET_PREFIX = Set.class.getCanonicalName() + "<";
 
-  private static final LruCache<Class<? extends Annotation>, Boolean> IS_QUALIFIER_ANNOTATION
-      = new LruCache<Class<? extends Annotation>, Boolean>(Integer.MAX_VALUE) {
-    @Override protected Boolean create(Class<? extends Annotation> annotationType) {
-      return annotationType.isAnnotationPresent(Qualifier.class);
-    }
-  };
+  private static final Memoizer<Class<? extends Annotation>, Boolean> IS_QUALIFIER_ANNOTATION =
+      new Memoizer<Class<? extends Annotation>, Boolean>() {
+        @Override protected Boolean create(Class<? extends Annotation> annotationType) {
+          return annotationType.isAnnotationPresent(Qualifier.class);
+        }
+      };
 
   Keys() {
   }
@@ -61,14 +61,14 @@ public final class Keys {
     return get(type, null);
   }
 
-
   /** Returns a key for the members of {@code type}. */
   public static String getMembersKey(Class<?> key) {
-    return "members/" + get(key);
+    // for classes key.getName() is equivalent to get(key)
+    return "members/".concat(key.getName());
   }
 
   /** Returns a key for {@code type} annotated by {@code annotation}. */
-  public static String get(Type type, Annotation annotation) {
+  private static String get(Type type, Annotation annotation) {
     type = boxIfPrimitive(type);
     if (annotation == null && type instanceof Class && !((Class<?>) type).isArray()) {
       return ((Class<?>) type).getName();
@@ -231,11 +231,6 @@ public final class Keys {
   /** Returns true if {@code string.substring(offset).startsWith(substring)}. */
   private static boolean substringStartsWith(String string, int offset, String substring) {
     return string.regionMatches(offset, substring, 0, substring.length());
-  }
-
-  /** Returns true if {@code key} is a binding that supports members injection. */
-  public static boolean isMembersInjection(String key) {
-    return key.startsWith("members/");
   }
 
   /** Returns true if {@code key} has a qualifier annotation. */

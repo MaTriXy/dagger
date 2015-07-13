@@ -16,12 +16,21 @@
  */
 package dagger.internal.codegen;
 
+import com.google.common.base.Joiner;
+import com.squareup.javapoet.AnnotationSpec;
+import com.squareup.javapoet.ArrayTypeName;
+import com.squareup.javapoet.ClassName;
+import com.squareup.javapoet.ParameterizedTypeName;
+import com.squareup.javapoet.TypeName;
+import com.squareup.javapoet.WildcardTypeName;
+import dagger.internal.Binding;
 import dagger.internal.Keys;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.AnnotationValueVisitor;
@@ -44,6 +53,20 @@ import javax.lang.model.util.SimpleTypeVisitor6;
  * Utilities for handling types in annotation processors
  */
 final class Util {
+  // Binding<?>.
+  public static final TypeName BINDING_OF_ANY = ParameterizedTypeName.get(
+      ClassName.get(Binding.class), WildcardTypeName.subtypeOf(Object.class));
+  // Set<Binding<?>>.
+  public static final TypeName SET_OF_BINDINGS = ParameterizedTypeName.get(
+      ClassName.get(Set.class), BINDING_OF_ANY);
+  // Class<?>[].
+  public static final TypeName ARRAY_OF_CLASS = ArrayTypeName.of(ParameterizedTypeName.get(
+      ClassName.get(Class.class), WildcardTypeName.subtypeOf(Object.class)));
+  // @SuppressWarnings("unchecked")
+  public static final AnnotationSpec UNCHECKED = AnnotationSpec.builder(SuppressWarnings.class)
+      .addMember("value", "$S", "unchecked")
+      .build();
+
   private Util() {
   }
 
@@ -64,12 +87,10 @@ final class Util {
     return Keys.isPlatformType(supertype.toString()) ? null : supertype;
   }
 
-  /** Returns a fully qualified class name to complement {@code type}. */
-  public static String adapterName(TypeElement typeElement, String suffix) {
-    StringBuilder builder = new StringBuilder();
-    rawTypeToString(builder, typeElement, '$');
-    builder.append(suffix);
-    return builder.toString();
+  /** Returns a class name to complement {@code type}. */
+  public static ClassName adapterName(ClassName type, String suffix) {
+    return ClassName.get(type.packageName(),
+        Joiner.on('$').join(type.simpleNames()) + suffix);
   }
 
   /** Returns a string for {@code type}. Primitive types are always boxed. */
@@ -119,7 +140,7 @@ final class Util {
         return null;
       }
       @Override public Void visitPrimitive(PrimitiveType primitiveType, Void v) {
-        result.append(box((PrimitiveType) type).getName());
+        result.append(box((PrimitiveType) type));
         return null;
       }
       @Override public Void visitArray(ArrayType arrayType, Void v) {
@@ -137,10 +158,17 @@ final class Util {
         return null;
       }
       @Override public Void visitError(ErrorType errorType, Void v) {
-        // There's already an error but it may not have been reported (most likely
-        // a missing import). If we throw an UnsupportedOperationException here
-        // we'll obscure the real error, so just continue.
-        result.append("error");
+        // Error type found, a type may not yet have been generated, but we need the type
+        // so we can generate the correct code in anticipation of the type being available
+        // to the compiler.
+
+        // Paramterized types which don't exist are returned as an error type whose name is "<any>"
+        if ("<any>".equals(errorType.toString())) {
+          throw new CodeGenerationIncompleteException(
+              "Type reported as <any> is likely a not-yet generated parameterized type.");
+        }
+        // TODO(cgruber): Figure out a strategy for non-FQCN cases.
+        result.append(errorType.toString());
         return null;
       }
       @Override protected Void defaultAction(TypeMirror typeMirror, Void v) {
@@ -150,19 +178,57 @@ final class Util {
     }, null);
   }
 
-  private static final AnnotationValueVisitor<Object, Void> VALUE_EXTRACTOR
-      = new SimpleAnnotationValueVisitor6<Object, Void>() {
-    @Override protected Object defaultAction(Object o, Void v) {
-      return o;
-    }
-    @Override public Object visitArray(List<? extends AnnotationValue> values, Void v) {
-      Object[] result = new Object[values.size()];
-      for (int i = 0; i < values.size(); i++) {
-        result[i] = values.get(i).accept(this, null);
+  /** Returns a string for {@code type}. Primitive types are always boxed. */
+  public static TypeName injectableType(TypeMirror type) {
+    return type.accept(new SimpleTypeVisitor6<TypeName, Void>() {
+      @Override public TypeName visitPrimitive(PrimitiveType primitiveType, Void v) {
+        return box(primitiveType);
       }
-      return result;
-    }
-  };
+
+      @Override public TypeName visitError(ErrorType errorType, Void v) {
+        // Error type found, a type may not yet have been generated, but we need the type
+        // so we can generate the correct code in anticipation of the type being available
+        // to the compiler.
+
+        // Paramterized types which don't exist are returned as an error type whose name is "<any>"
+        if ("<any>".equals(errorType.toString())) {
+          throw new CodeGenerationIncompleteException(
+              "Type reported as <any> is likely a not-yet generated parameterized type.");
+        }
+
+        return ClassName.bestGuess(errorType.toString());
+      }
+
+      @Override protected TypeName defaultAction(TypeMirror typeMirror, Void v) {
+        return TypeName.get(typeMirror);
+      }
+    }, null);
+  }
+
+  private static final AnnotationValueVisitor<Object, Void> VALUE_EXTRACTOR =
+      new SimpleAnnotationValueVisitor6<Object, Void>() {
+        @Override public Object visitString(String s, Void p) {
+          if ("<error>".equals(s)) {
+            throw new CodeGenerationIncompleteException("Unknown type returned as <error>.");
+          } else if ("<any>".equals(s)) {
+            throw new CodeGenerationIncompleteException("Unknown type returned as <any>.");
+          }
+          return s;
+        }
+        @Override public Object visitType(TypeMirror t, Void p) {
+          return t;
+        }
+        @Override protected Object defaultAction(Object o, Void v) {
+          return o;
+        }
+        @Override public Object visitArray(List<? extends AnnotationValue> values, Void v) {
+          Object[] result = new Object[values.size()];
+          for (int i = 0; i < values.size(); i++) {
+            result[i] = values.get(i).accept(this, null);
+          }
+          return result;
+        }
+      };
 
   /**
    * Returns the annotation on {@code element} formatted as a Map. This returns
@@ -196,7 +262,6 @@ final class Util {
       }
       return result;
     }
-
     return null; // Annotation not found.
   }
 
@@ -249,26 +314,26 @@ final class Util {
     }
   }
 
-  private static Class<?> box(PrimitiveType primitiveType) {
+  private static TypeName box(PrimitiveType primitiveType) {
     switch (primitiveType.getKind()) {
       case BYTE:
-        return Byte.class;
+        return ClassName.get(Byte.class);
       case SHORT:
-        return Short.class;
+        return ClassName.get(Short.class);
       case INT:
-        return Integer.class;
+        return ClassName.get(Integer.class);
       case LONG:
-        return Long.class;
+        return ClassName.get(Long.class);
       case FLOAT:
-        return Float.class;
+        return ClassName.get(Float.class);
       case DOUBLE:
-        return Double.class;
+        return ClassName.get(Double.class);
       case BOOLEAN:
-        return Boolean.class;
+        return ClassName.get(Boolean.class);
       case CHAR:
-        return Character.class;
+        return ClassName.get(Character.class);
       case VOID:
-        return Void.class;
+        return ClassName.get(Void.class);
       default:
         throw new AssertionError();
     }
@@ -305,13 +370,12 @@ final class Util {
         || type.getModifiers().contains(Modifier.STATIC);
   }
 
+
   /**
-   * Returns a user-presentable string like {@code
-   * coffee.CoffeeModule#provideHeater()}.
+   * Returns a user-presentable string like {@code coffee.CoffeeModule}.
    */
-  public static String methodName(ExecutableElement method) {
-    return ((TypeElement) method.getEnclosingElement()).getQualifiedName()
-        + "." + method.getSimpleName() + "()";
+  public static String className(ExecutableElement method) {
+    return ((TypeElement) method.getEnclosingElement()).getQualifiedName().toString();
   }
 
   public static boolean isInterface(TypeMirror typeMirror) {
@@ -326,5 +390,20 @@ final class Util {
       }
     }
     return false;
+  }
+
+  static ParameterizedTypeName bindingOf(TypeMirror type) {
+    return ParameterizedTypeName.get(ClassName.get(Binding.class), injectableType(type));
+  }
+
+  /**
+   * An exception thrown when a type is not extant (returns as an error type),
+   * usually as a result of another processor not having yet generated its types upon
+   * which a dagger-annotated type depends.
+   */
+  final static class CodeGenerationIncompleteException extends IllegalStateException {
+    public CodeGenerationIncompleteException(String s) {
+      super(s);
+    }
   }
 }

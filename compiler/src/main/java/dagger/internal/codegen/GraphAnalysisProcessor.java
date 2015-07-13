@@ -19,9 +19,12 @@ import dagger.Module;
 import dagger.Provides;
 import dagger.internal.Binding;
 import dagger.internal.Binding.InvalidBindingException;
+import dagger.internal.BindingsGroup;
 import dagger.internal.Linker;
 import dagger.internal.ProblemDetector;
+import dagger.internal.ProvidesBinding;
 import dagger.internal.SetBinding;
+import dagger.internal.codegen.Util.CodeGenerationIncompleteException;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -55,16 +58,20 @@ import javax.tools.StandardLocation;
 
 import static dagger.Provides.Type.SET;
 import static dagger.Provides.Type.SET_VALUES;
+import static dagger.internal.codegen.Util.className;
 import static dagger.internal.codegen.Util.getAnnotation;
 import static dagger.internal.codegen.Util.getPackage;
 import static dagger.internal.codegen.Util.isInterface;
-import static dagger.internal.codegen.Util.methodName;
+import static java.util.Arrays.asList;
 
 /**
  * Performs full graph analysis on a module.
  */
 @SupportedAnnotationTypes("dagger.Module")
 public final class GraphAnalysisProcessor extends AbstractProcessor {
+  private static final Set<String> ERROR_NAMES_TO_PROPAGATE = new LinkedHashSet<String>(asList(
+      "com.sun.tools.javac.code.Symbol$CompletionFailure"));
+
   private final Set<String> delayedModuleNames = new LinkedHashSet<String>();
 
   @Override public SourceVersion getSupportedSourceVersion() {
@@ -95,9 +102,14 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
     }
 
     for (Element element : modules) {
-      Map<String, Object> annotation = getAnnotation(Module.class, element);
-      TypeElement moduleType = (TypeElement) element;
+      Map<String, Object> annotation = null;
+      try {
+        annotation = getAnnotation(Module.class, element);
+      } catch (CodeGenerationIncompleteException e) {
+        continue; // skip this element. An up-stream compiler error is in play.
+      }
 
+      TypeElement moduleType = (TypeElement) element;
       if (annotation == null) {
         error("Missing @Module annotation.", moduleType);
         continue;
@@ -114,7 +126,11 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
           error("Graph validation failed: " + e.getMessage(), elements().getTypeElement(e.type));
           continue;
         } catch (RuntimeException e) {
-          error("Graph validation failed: " + e.getMessage(), moduleType);
+          if (ERROR_NAMES_TO_PROPAGATE.contains(e.getClass().getName())) {
+            throw e;
+          }
+          error("Unknown error " + e.getClass().getName() + " thrown by javac in graph validation: "
+              + e.getMessage(), moduleType);
           continue;
         }
         try {
@@ -158,19 +174,30 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
     // We know statically that we're single threaded, but we synchronize anyway
     // to make the linker happy.
     synchronized (linker) {
-      Map<String, Binding<?>> baseBindings = new LinkedHashMap<String, Binding<?>>();
-      Map<String, Binding<?>> overrideBindings = new LinkedHashMap<String, Binding<?>>();
+      BindingsGroup baseBindings = new BindingsGroup() {
+        @Override public Binding<?> contributeSetBinding(String key, SetBinding<?> value) {
+          return super.put(key, value);
+        }
+      };
+      BindingsGroup overrideBindings = new BindingsGroup() {
+        @Override public Binding<?> contributeSetBinding(String key, SetBinding<?> value) {
+          throw new IllegalStateException("Module overrides cannot contribute set bindings.");
+        }
+      };
       for (TypeElement module : allModules.values()) {
         Map<String, Object> annotation = getAnnotation(Module.class, module);
         boolean overrides = (Boolean) annotation.get("overrides");
         boolean library = (Boolean) annotation.get("library");
-        Map<String, Binding<?>> addTo = overrides ? overrideBindings : baseBindings;
+        BindingsGroup addTo = overrides ? overrideBindings : baseBindings;
 
         // Gather the injectable types from the annotation.
+        Set<String> injectsProvisionKeys = new LinkedHashSet<String>();
         for (Object injectableTypeObject : (Object[]) annotation.get("injects")) {
           TypeMirror injectableType = (TypeMirror) injectableTypeObject;
+          String providerKey = GeneratorKeys.get(injectableType);
+          injectsProvisionKeys.add(providerKey);
           String key = isInterface(injectableType)
-              ? GeneratorKeys.get(injectableType)
+              ? providerKey
               : GeneratorKeys.rawMembersKey(injectableType);
           linker.requestBinding(key, module.getQualifiedName().toString(),
               getClass().getClassLoader(), false, true);
@@ -191,9 +218,9 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
           }
           ExecutableElement providerMethod = (ExecutableElement) enclosed;
           String key = GeneratorKeys.get(providerMethod);
-          Binding binding = new ProviderMethodBinding(key, providerMethod, library);
+          ProvidesBinding<?> binding = new ProviderMethodBinding(key, providerMethod, library);
 
-          Binding previous = addTo.get(key);
+          Binding<?> previous = addTo.get(key);
           if (previous != null) {
             if ((provides.type() == SET || provides.type() == SET_VALUES)
                 && previous instanceof SetBinding) {
@@ -210,7 +237,14 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
 
           switch (provides.type()) {
             case UNIQUE:
-              addTo.put(key, binding);
+              if (injectsProvisionKeys.contains(binding.provideKey)) {
+                binding.setDependedOn(true);
+              }
+              try {
+                addTo.contributeProvidesBinding(key, binding);
+              } catch (IllegalStateException ise) {
+                throw new ModuleValidationException(ise.getMessage(), providerMethod);
+              }
               break;
 
             case SET:
@@ -242,11 +276,6 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
 
   private Elements elements() {
     return processingEnv.getElementUtils();
-  }
-
-  private String shortMethodName(ExecutableElement method) {
-    return method.getEnclosingElement().getSimpleName().toString()
-        + "." + method.getSimpleName() + "()";
   }
 
   void collectIncludesRecursively(
@@ -297,12 +326,13 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
     }
   }
 
-  static class ProviderMethodBinding extends Binding<Object> {
+  static class ProviderMethodBinding extends ProvidesBinding<Object> {
     private final ExecutableElement method;
     private final Binding<?>[] parameters;
 
     protected ProviderMethodBinding(String provideKey, ExecutableElement method, boolean library) {
-      super(provideKey, null, method.getAnnotation(Singleton.class) != null, methodName(method));
+      super(provideKey, method.getAnnotation(Singleton.class) != null,
+          className(method), method.getSimpleName().toString());
       this.method = method;
       this.parameters = new Binding[method.getParameters().size()];
       setLibrary(library);
@@ -328,6 +358,11 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
     @Override public void getDependencies(Set<Binding<?>> get, Set<Binding<?>> injectMembers) {
       Collections.addAll(get, parameters);
     }
+
+    @Override public String toString() {
+      return "ProvidesBinding[key=" + provideKey
+          + " method=" + moduleClass + "." + method.getSimpleName() + "()";
+    }
   }
 
   void writeDotFile(TypeElement module, Map<String, Binding<?>> bindings) throws IOException {
@@ -343,9 +378,9 @@ public final class GraphAnalysisProcessor extends AbstractProcessor {
   }
 
   static class ModuleValidationException extends IllegalStateException {
-    final TypeElement source;
+    final Element source;
 
-    public ModuleValidationException(String message, TypeElement source) {
+    public ModuleValidationException(String message, Element source) {
       super(message);
       this.source = source;
     }
