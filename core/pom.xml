@@ -20,7 +20,7 @@
   <parent>
     <groupId>com.squareup.dagger</groupId>
     <artifactId>dagger-parent</artifactId>
-    <version>1.2.3-SNAPSHOT</version>
+    <version>1.2.6-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -39,8 +39,8 @@
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.easytesting</groupId>
-      <artifactId>fest-assert</artifactId>
+      <groupId>com.google.truth</groupId>
+      <artifactId>truth</artifactId>
       <scope>test</scope>
     </dependency>
   </dependencies>

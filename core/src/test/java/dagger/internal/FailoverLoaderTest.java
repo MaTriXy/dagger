@@ -24,7 +24,7 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
 
-import static org.fest.assertions.Assertions.assertThat;
+import static com.google.common.truth.Truth.assertThat;
 
 /**
  * A test case to deal with fall-back to reflection where the concrete type has been generated
@@ -33,7 +33,7 @@ import static org.fest.assertions.Assertions.assertThat;
 @RunWith(JUnit4.class)
 public final class FailoverLoaderTest {
 
-  @Module(injects = EntryPoint.class)
+  @Module(injects = Entry$Point.class)
   static class TestModule {
     @Provides String aString() { return "a"; }
   }
@@ -45,12 +45,12 @@ public final class FailoverLoaderTest {
     }
   }
 
-  static class EntryPoint {
+  static class Entry$Point {
     @Inject String a;
   }
 
   @Test public void simpleInjectionWithUnGeneratedCode() {
-    EntryPoint entryPoint = new EntryPoint();
+    Entry$Point entryPoint = new Entry$Point();
     ObjectGraph.create(new TestModule()).inject(entryPoint);
     assertThat(entryPoint.a).isEqualTo("a");
   }

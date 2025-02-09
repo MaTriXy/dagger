@@ -22,7 +22,6 @@ import com.squareup.javapoet.JavaFile;
 import com.squareup.javapoet.MethodSpec;
 import com.squareup.javapoet.ParameterizedTypeName;
 import com.squareup.javapoet.TypeSpec;
-import dagger.MembersInjector;
 import dagger.ObjectGraph;
 import dagger.internal.Binding;
 import dagger.internal.Linker;
@@ -38,7 +37,6 @@ import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.inject.Inject;
-import javax.inject.Provider;
 import javax.inject.Singleton;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
@@ -245,6 +243,9 @@ public final class InjectAdapterProcessor extends AbstractProcessor {
       List<Element> fields) throws IOException {
     String packageName = getPackage(type).getQualifiedName().toString();
     TypeMirror supertype = getApplicationSupertype(type);
+    if (supertype != null) {
+      supertype = processingEnv.getTypeUtils().erasure(supertype);
+    }
     ClassName injectedClassName = ClassName.get(type);
     ClassName adapterClassName = adapterName(injectedClassName, INJECT_ADAPTER_SUFFIX);
 
@@ -262,15 +263,6 @@ public final class InjectAdapterProcessor extends AbstractProcessor {
         .superclass(ParameterizedTypeName.get(ClassName.get(Binding.class), injectedClassName))
         .addJavadoc("$L", bindingTypeDocs(injectableType(type.asType()), isAbstract,
             injectMembers, dependent).toString());
-
-    if (constructor != null) {
-      result.addSuperinterface(ParameterizedTypeName.get(
-          ClassName.get(Provider.class), injectedClassName));
-    }
-    if (injectMembers) {
-      result.addSuperinterface(ParameterizedTypeName.get(
-          ClassName.get(MembersInjector.class), injectedClassName));
-    }
 
     for (Element field : fields) {
       result.addField(memberBindingField(disambiguateFields, field));

@@ -26,7 +26,7 @@
   <groupId>com.squareup.dagger</groupId>
   <artifactId>dagger-parent</artifactId>
   <packaging>pom</packaging>
-  <version>1.2.3-SNAPSHOT</version>
+  <version>1.2.6-SNAPSHOT</version>
   <name>Dagger (Parent)</name>
   <description>A fast dependency injector for Android and Java.</description>
   <url>https://github.com/square/dagger</url>
@@ -43,14 +43,13 @@
     <!-- Compilation -->
     <java.version>1.6</java.version>
     <javax.inject.version>1</javax.inject.version>
-    <javapoet.version>1.0.0</javapoet.version>
-    <guava.version>18.0</guava.version>
+    <javapoet.version>1.7.0</javapoet.version>
+    <guava.version>19.0</guava.version>
 
     <!-- Test Dependencies -->
-    <junit.version>4.10</junit.version>
-    <fest.version>1.4</fest.version>
-    <truth.version>0.13</truth.version>
-    <compile-testing.version>0.4</compile-testing.version>
+    <junit.version>4.13.1</junit.version>
+    <truth.version>0.28</truth.version>
+    <compile-testing.version>0.8</compile-testing.version>
     <mockito.version>1.10.19</mockito.version>
   </properties>
 
@@ -111,7 +110,7 @@
         <version>${compile-testing.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.truth0</groupId>
+        <groupId>com.google.truth</groupId>
         <artifactId>truth</artifactId>
         <version>${truth.version}</version>
       </dependency>
